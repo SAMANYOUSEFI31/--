@@ -1,0 +1,382 @@
+name: Build & Deploy Second Brain
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        default: 'debug'
+        type: choice
+        options: [ debug, release ]
+
+env:
+  NODE_VERSION: '20'
+  JAVA_VERSION: '17'
+
+jobs:
+  # ============================================
+  # JOB 1: Validate
+  # ============================================
+  validate:
+    name: Validate Files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required files
+        run: |
+          echo "Checking required files..."
+          files=(
+            "index.html" "manifest.json" "sw.js"
+            "capacitor.config.json" "package.json"
+            "src/app.js" "src/core/storage.js"
+            "src/core/router.js" "src/core/state.js"
+            "src/core/utils.js" "src/styles/tokens.css"
+            "src/styles/base.css" "src/styles/components.css"
+            "src/styles/layout.css" "src/styles/notifications.css"
+            "src/modules/notification.js" "src/modules/modal.js"
+            "src/modules/theme.js" "src/modules/search.js"
+            "src/pages/dashboard.js" "src/components/forms.js"
+          )
+          all_ok=true
+          for file in "${files[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✅ $file"
+            else
+              echo "❌ Missing: $file"
+              all_ok=false
+            fi
+          done
+          if [ "$all_ok" = false ]; then exit 1; fi
+          echo "All required files present!"
+
+      - name: Validate manifest.json
+        run: |
+          node -e "
+            const m = JSON.parse(require('fs').readFileSync('manifest.json','utf8'));
+            ['name','short_name','start_url','display','icons'].forEach(f => {
+              if (!m[f]) { console.error('Missing:', f); process.exit(1); }
+            });
+            console.log('✅ manifest.json valid');
+          "
+
+      - name: Validate sw.js syntax
+        run: node --check sw.js && echo "✅ sw.js syntax valid"
+
+  # ============================================
+  # JOB 2: Generate Icons
+  # ============================================
+  generate-icons:
+    name: Generate App Icons
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Generate PNG icons from SVG
+        run: |
+          npm install sharp --save-dev 2>/dev/null || true
+          node -e "
+          const fs = require('fs');
+          if (!fs.existsSync('public')) fs.mkdirSync('public', { recursive: true });
+
+          // Try sharp first, fallback to placeholder
+          try {
+            const sharp = require('sharp');
+            const svgContent = fs.readFileSync('public/icon.svg', 'utf8');
+            const svgBuffer = Buffer.from(svgContent);
+            const sizes = [72, 96, 128, 144, 152, 192, 384, 512];
+            Promise.all(sizes.map(size =>
+              sharp(svgBuffer).resize(size, size).png().toFile('public/icon-' + size + '.png')
+                .then(() => console.log('Generated icon-' + size + '.png'))
+            )).then(() => console.log('✅ All icons generated'))
+            .catch(e => { console.warn('Sharp failed:', e.message); createPlaceholders(); });
+          } catch(e) {
+            console.warn('Sharp not available:', e.message);
+            createPlaceholders();
+          }
+
+          function createPlaceholders() {
+            const sizes = [72, 96, 128, 144, 152, 192, 384, 512];
+            // Create minimal valid PNG (1x1 purple pixel)
+            const minPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+            sizes.forEach(size => {
+              if (!fs.existsSync('public/icon-' + size + '.png')) {
+                fs.writeFileSync('public/icon-' + size + '.png', minPng);
+                console.log('Created placeholder icon-' + size + '.png');
+              }
+            });
+          }
+          " || echo "Icon generation completed with fallback"
+
+      - name: Upload icons
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-icons
+          path: public/
+          retention-days: 1
+
+  # ============================================
+  # JOB 3: Deploy PWA to GitHub Pages
+  # ============================================
+  deploy-pwa:
+    name: Deploy PWA to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: [validate, generate-icons]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download icons
+        uses: actions/download-artifact@v4
+        with:
+          name: app-icons
+          path: public/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Show PWA URL
+        run: echo "🌐 PWA deployed to ${{ steps.deployment.outputs.page_url }}"
+
+  # ============================================
+  # JOB 4: Build Debug APK
+  # ============================================
+  build-debug-apk:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    needs: [validate, generate-icons]
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.release_type == 'debug'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Download icons
+        uses: actions/download-artifact@v4
+        with:
+          name: app-icons
+          path: public/
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Install Capacitor CLI
+        run: npm install -g @capacitor/cli@5
+
+      - name: Add Android platform
+        run: npx cap add android || echo "Android platform may already exist"
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Build Debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          GRADLE_OPTS: '-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false'
+
+      - name: Find and copy APK
+        run: |
+          mkdir -p artifacts
+          APK=$(find android -name "*.apk" -type f | head -1)
+          echo "Found APK: $APK"
+          cp "$APK" "artifacts/second-brain-debug-$(echo ${{ github.sha }} | cut -c1-8).apk"
+          ls -lh artifacts/
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: second-brain-debug-apk
+          path: artifacts/*.apk
+          retention-days: 30
+
+  # ============================================
+  # JOB 5: Build Release APK (on tags)
+  # ============================================
+  build-release-apk:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+    needs: [validate, generate-icons]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_type == 'release')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Download icons
+        uses: actions/download-artifact@v4
+        with:
+          name: app-icons
+          path: public/
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Install Capacitor CLI
+        run: npm install -g @capacitor/cli@5
+
+      - name: Add Android platform
+        run: npx cap add android || true
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Setup Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/release.keystore
+            echo "✅ Release keystore configured"
+          else
+            echo "⚠️ No keystore found, generating debug keystore..."
+            keytool -genkey -v \
+              -keystore android/release.keystore \
+              -alias secondbrain -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=Second Brain, OU=App, O=SecondBrain, L=Tehran, S=Tehran, C=IR"
+          fi
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-release-${{ hashFiles('**/*.gradle*') }}
+
+      - name: Build Release APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          GRADLE_OPTS: '-Dorg.gradle.daemon=false'
+
+      - name: Find and copy Release APK
+        run: |
+          mkdir -p artifacts
+          APK=$(find android -name "*release*.apk" -type f | head -1)
+          VERSION="${{ github.ref_name }}"
+          cp "$APK" "artifacts/second-brain-${VERSION}.apk"
+          echo "Release APK: artifacts/second-brain-${VERSION}.apk"
+          ls -lh artifacts/
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: second-brain-release-apk
+          path: artifacts/*.apk
+          retention-days: 90
+
+  # ============================================
+  # JOB 6: Create GitHub Release
+  # ============================================
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-release-apk
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: second-brain-release-apk
+          path: artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "🧠 ذهن دوم ${{ github.ref_name }}"
+          body: |
+            ## 🧠 ذهن دوم - نسخه ${{ github.ref_name }}
+
+            ### 📥 دانلود
+            - **APK اندروید**: فایل `second-brain-*.apk` را دانلود کنید
+            - **PWA**: آدرس GitHub Pages را در مرورگر باز کنید
+
+            ### 📱 نصب APK
+            1. فایل APK را دانلود کنید
+            2. در تنظیمات اندروید، "نصب از منابع ناشناس" را فعال کنید
+            3. فایل APK را باز کنید و نصب کنید
+
+            ### ✨ ویژگی‌ها
+            - ✅ مدیریت یادداشت‌ها، وظایف، پروژه‌ها و اهداف
+            - ✅ کاملاً آفلاین
+            - ✅ PWA قابل نصب
+            - ✅ تم روشن و تاریک
+            - ✅ جستجوی سراسری
+          files: artifacts/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

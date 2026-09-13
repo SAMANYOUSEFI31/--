@@ -1,0 +1,23 @@
+{
+  "name": "second-brain",
+  "version": "1.0.0",
+  "description": "A complete offline Second Brain app with PWA and Android support",
+  "scripts": {
+    "dev": "npx serve . -p 3000",
+    "cap:add:android": "npx cap add android",
+    "cap:sync": "npx cap sync",
+    "cap:open:android": "npx cap open android"
+  },
+  "keywords": ["second-brain", "pwa", "offline", "productivity"],
+  "author": "Second Brain Team",
+  "license": "MIT",
+  "dependencies": {
+    "@capacitor/android": "^5.0.0",
+    "@capacitor/core": "^5.0.0",
+    "@capacitor/preferences": "^5.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^5.0.0",
+    "serve": "^14.0.0"
+  }
+}

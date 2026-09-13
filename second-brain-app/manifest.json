@@ -1,0 +1,50 @@
+{
+  "name": "ذهن دوم - Second Brain",
+  "short_name": "ذهن دوم",
+  "description": "سیستم مدیریت شخصی کامل - یادداشت، وظایف، پروژه‌ها و اهداف",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#6366f1",
+  "theme_color": "#6366f1",
+  "lang": "fa",
+  "dir": "rtl",
+  "categories": ["productivity", "utilities", "lifestyle"],
+  "shortcuts": [
+    {
+      "name": "یادداشت جدید",
+      "short_name": "یادداشت",
+      "description": "ایجاد یادداشت جدید",
+      "url": "./index.html#/notes/new",
+      "icons": [{ "src": "public/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "وظیفه جدید",
+      "short_name": "وظیفه",
+      "description": "ایجاد وظیفه جدید",
+      "url": "./index.html#/tasks/new",
+      "icons": [{ "src": "public/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
+  "icons": [
+    {
+      "src": "public/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "public/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "public/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
